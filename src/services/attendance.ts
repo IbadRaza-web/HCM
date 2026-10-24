@@ -82,7 +82,8 @@ export async function attendanceBoard(date: string, departmentId?: string) {
   if (departmentId) eq = eq.eq("department_id", departmentId);
   const { data: employees } = await eq;
 
-  const ids = (employees ?? []).map((e) => e.id);
+  const empRows = (employees ?? []) as unknown as { id: string; full_name: string; employee_code: string; join_date: string; exit_date: string | null; departments: { name: string } | null }[];
+  const ids = empRows.map((e) => e.id);
   const [{ data: atts }, { data: leaves }] = await Promise.all([
     ids.length
       ? supabaseAdmin.from("attendance").select("*").eq("work_date", date).in("employee_id", ids)
@@ -96,7 +97,7 @@ export async function attendanceBoard(date: string, departmentId?: string) {
   const leaveSet = new Set((leaves ?? []).map((l) => l.employee_id));
   const workingDay = isWorkingDay(date, settings.weekend_days, holidays);
 
-  const rows: BoardRow[] = (employees ?? []).map((e) => {
+  const rows: BoardRow[] = empRows.map((e) => {
     const a = attMap.get(e.id);
     let status: string;
     if (a) status = a.status;

@@ -9,14 +9,20 @@ export interface Filters { from?: string; to?: string; departmentId?: string }
 
 function yearStartOf(today: string) { return today.slice(0, 4) + "-01-01"; }
 
-async function activeEmployees(f: Filters, asOf: string) {
+export interface EmployeeRow {
+  id: string; full_name: string; employee_code: string; gender: string | null;
+  join_date: string; exit_date: string | null; department_id: string | null;
+  basic_salary: string | number; departments: { name: string } | null;
+}
+
+async function activeEmployees(f: Filters, asOf: string): Promise<EmployeeRow[]> {
   let q = supabaseAdmin.from("employees").select("id, full_name, employee_code, gender, join_date, exit_date, department_id, basic_salary, departments(name)")
     .in("status", ["active", "probation"])
     .lte("join_date", asOf)
     .or(`exit_date.is.null,exit_date.gt.${asOf}`);
   if (f.departmentId) q = q.eq("department_id", f.departmentId);
   const { data } = await q;
-  return data ?? [];
+  return (data ?? []) as unknown as EmployeeRow[];
 }
 
 /** Attendance rate per the brief: (present+late+missing_checkout+0.5×half) ÷ (expected working days − approved leave). */
@@ -133,7 +139,7 @@ export async function hrKpis(f: Filters) {
 
   const leaveByType = new Map<string, number>();
   (monthLeave ?? []).forEach((l) => {
-    const k = (l.leave_types as { label: string })?.label ?? "Leave";
+    const k = (l.leave_types as unknown as { label: string })?.label ?? "Leave";
     // count only days inside this month
     const days = eachDay(l.start_date < start ? start : l.start_date, l.end_date > end ? end : l.end_date)
       .filter((x) => isWorkingDay(x, settings.weekend_days, holidays)).length;

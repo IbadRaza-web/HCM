@@ -1,34 +1,21 @@
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { ApiError } from "@/lib/auth";
-import { getSettings, writeAudit, notify } from "@/lib/org";
-import { monthStart, monthEnd, eachDay, isWorkingDay, todayISO, fmtMonth } from "@/lib/dates";
-import { salaryComponents, monthlyTax, r2 } from "@/lib/money";
+import { getSettings, writeAudit, notify, getHolidaySet } from "@/lib/org";
+import { monthStart, monthEnd, todayISO, fmtMonth } from "@/lib/dates";
+import { payrollCalc } from "./payroll-calc";
 
 interface EmployeeLike {
   id: string; full_name: string; employee_code: string; basic_salary: string | number;
   join_date: string; exit_date: string | null; status: string;
 }
 
-/**
- * Pure payroll calculation for one employee and month.
- * - full-month working days: scheduled days after weekends/holidays
- * - eligible days: intersected with employment dates (join/exit proration)
- * - deductions: absent + unpaid leave + 0.5 × half days (approved paid leave is free)
- * - only days that have already happened are evaluated (no future absences)
- */
+/** Loads attendance + approved leave from the DB, then delegates to the pure payrollCalc. */
 export async function computePayslip(
   emp: EmployeeLike, month: string,
   settings: { weekend_days: number[] }, holidays: Set<string>, today: string
 ) {
   const start = monthStart(month), end = monthEnd(month);
-  const comp = salaryComponents(Number(emp.basic_salary));
-  const monthDays = eachDay(start, end).filter((x) => isWorkingDay(x, settings.weekend_days, holidays));
-  const fullWD = monthDays.length;
-  const eligible = monthDays.filter(
-    (x) => x >= emp.join_date && (!emp.exit_date || x <= emp.exit_date));
-  const evaluable = eligible.filter((x) => x <= today);
-
   const [{ data: atts }, { data: leaves }] = await Promise.all([
     supabaseAdmin.from("attendance").select("work_date, status")
       .eq("employee_id", emp.id).gte("work_date", start).lte("work_date", end),
@@ -37,40 +24,30 @@ export async function computePayslip(
       .eq("employee_id", emp.id).eq("status", "approved")
       .lte("start_date", end).gte("end_date", start),
   ]);
-  const attMap = new Map((atts ?? []).map((a) => [a.work_date, a.status]));
-  const leaveCovers = (day: string, paid: boolean) =>
-    (leaves ?? []).some(
-      (l) => l.start_date <= day && day <= l.end_date && (l.leave_types as { paid: boolean }).paid === paid);
-
-  let absent = 0, half = 0, unpaid = 0, presentish = 0, paidLeave = 0;
-  for (const day of evaluable) {
-    const st = attMap.get(day);
-    if (st === "absent") absent++;
-    else if (st === "half_day") half++;
-    else if (st) presentish++;
-    else if (leaveCovers(day, false)) unpaid++;
-    else if (leaveCovers(day, true)) paidLeave++;
-    else absent++;
-  }
-
-  const dailyRate = fullWD > 0 ? r2(comp.gross / fullWD) : 0;
-  const deductionDays = r2(absent + unpaid + 0.5 * half);
-  const deduction = r2(dailyRate * deductionDays);
-  const proratedGross = fullWD > 0 ? r2(comp.gross * (eligible.length / fullWD)) : comp.gross;
-  const taxableAnnual = r2(proratedGross * 12);
-  const tax = monthlyTax(proratedGross);
-  const net = r2(proratedGross - deduction - tax);
-
+  const calc = payrollCalc({
+    basic: Number(emp.basic_salary),
+    joinDate: emp.join_date,
+    exitDate: emp.exit_date,
+    month,
+    weekendDays: settings.weekend_days,
+    holidays,
+    today,
+    attendance: new Map((atts ?? []).map((a) => [a.work_date, a.status])),
+    leaves: (leaves ?? []).map((l) => ({
+      start: l.start_date, end: l.end_date,
+      paid: (l.leave_types as unknown as { paid: boolean })?.paid !== false,
+    })),
+  });
   return {
     employee_id: emp.id,
-    basic: comp.basic, hra: comp.hra, medical: comp.medical, gross: comp.gross,
-    working_days: fullWD, eligible_days: eligible.length,
-    absent_days: absent, unpaid_days: unpaid, half_days: half,
-    deduction, taxable_annual: taxableAnnual, tax, net,
+    basic: calc.basic, hra: calc.hra, medical: calc.medical, gross: calc.gross,
+    working_days: calc.working_days, eligible_days: calc.eligible_days,
+    absent_days: calc.absent_days, unpaid_days: calc.unpaid_days, half_days: calc.half_days,
+    deduction: calc.deduction, taxable_annual: calc.taxable_annual, tax: calc.tax, net: calc.net,
     details: {
       employee_name: emp.full_name, employee_code: emp.employee_code,
-      daily_rate: dailyRate, deduction_days: deductionDays,
-      evaluated_days: evaluable.length, present_days: presentish, paid_leave_days: paidLeave,
+      daily_rate: calc.daily_rate, deduction_days: calc.deduction_days,
+      evaluated_days: calc.evaluated_days, present_days: calc.present_days, paid_leave_days: calc.paid_leave_days,
       formula: "gross=1.5×basic; daily=gross/full-month working days; deduct absent+unpaid+0.5×half; tax=slab(gross×12)/12",
     },
   };
@@ -92,7 +69,7 @@ export async function runPayroll(actorProfileId: string, month: string) {
     runId = created.id;
   }
 
-  const holidays = await (await import("@/lib/org")).getHolidaySet(Number(m.slice(0, 4)));
+  const holidays = await getHolidaySet(Number(m.slice(0, 4)));
   const today = todayISO();
   const { data: employees } = await supabaseAdmin.from("employees")
     .select("*").in("status", ["active", "probation"]).lte("join_date", monthEnd(m));

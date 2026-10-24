@@ -28,21 +28,10 @@ export const POST = handler(async (req) => {
   return ok({ leave_type: data });
 });
 
-type Ctx = { params: Promise<{ id: string }> };
-
-export const PUT = handler<Ctx>(async (req, ctx) => {
+export const DELETE = handler(async (req) => {
   const user = await requireUser(["admin"]);
-  const { id } = await ctx.params;
-  const p = await parseBody(req, schema.partial());
-  const { data, error } = await supabaseAdmin.from("leave_types").update(p).eq("id", id).select().single();
-  if (error || !data) return ok({ error: "Could not update leave type" }, 422);
-  await writeAudit({ actorId: user.id, action: "leave_type.update", entityType: "leave_types", entityId: id, after: data });
-  return ok({ leave_type: data });
-});
-
-export const DELETE = handler<Ctx>(async (_req, ctx) => {
-  const user = await requireUser(["admin"]);
-  const { id } = await ctx.params;
+  const id = new URL(req.url).searchParams.get("id");
+  if (!id) return ok({ error: "Missing id" }, 422);
   const { error } = await supabaseAdmin.from("leave_types").delete().eq("id", id);
   if (error) return ok({ error: "Leave type is used by requests — deactivate it instead" }, 422);
   await writeAudit({ actorId: user.id, action: "leave_type.delete", entityType: "leave_types", entityId: id });

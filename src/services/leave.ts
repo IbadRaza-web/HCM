@@ -125,5 +125,9 @@ export async function onLeaveOn(date: string) {
     .from("leave_requests")
     .select("employee_id, leave_types(label), employees(full_name, employee_code)")
     .eq("status", "approved").lte("start_date", date).gte("end_date", date);
-  return data ?? [];
+  return (data ?? []) as unknown as {
+    employee_id: string;
+    leave_types: { label: string } | null;
+    employees: { full_name: string; employee_code: string } | null;
+  }[];
 }

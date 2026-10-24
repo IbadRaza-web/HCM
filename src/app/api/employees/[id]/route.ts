@@ -33,5 +33,6 @@ export const PUT = handler<Ctx>(async (req, ctx) => {
   if (user.role === "employee" && user.employeeId !== id)
     throw new ApiError(403, "Employees can only edit their own phone and address");
   const patch = await parseBody(req, schema);
-  return ok({ employee: await updateEmployee(user.id, user.role, id, patch) });
+  const actorRole = user.role as "hr" | "employee";
+  return ok({ employee: await updateEmployee(user.id, actorRole, id, patch) });
 });

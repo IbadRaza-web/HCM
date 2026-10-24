@@ -138,7 +138,8 @@ async function runTool(user: SessionUser, name: string, args: Record<string, unk
       if (!q) return { results: [] };
       const { data } = await supabaseAdmin.from("employees").select("full_name, employee_code, status, departments(name)")
         .or(`full_name.ilike.%${q}%,employee_code.ilike.%${q}%,email.ilike.%${q}%`).limit(8);
-      return { results: (data ?? []).map((e) => ({ name: e.full_name, code: e.employee_code, department: e.departments?.name ?? "—", status: e.status })) };
+      const rows = (data ?? []) as unknown as { full_name: string; employee_code: string; status: string; departments: { name: string } | null }[];
+      return { results: rows.map((e) => ({ name: e.full_name, code: e.employee_code, department: e.departments?.name ?? "—", status: e.status })) };
     }
     default:
       return { error: `Unknown tool ${name}` };

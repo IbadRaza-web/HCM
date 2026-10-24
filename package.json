@@ -14,6 +14,7 @@
     "pdf-lib": "^1.17.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-is": "^19.3.1",
     "recharts": "^3.10.1",
     "server-only": "^0.0.1",
     "zod": "^4.6.7"
@@ -24,6 +25,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   }
 }
