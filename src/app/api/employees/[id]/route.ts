@@ -7,11 +7,16 @@ import { employee360, updateEmployee } from "@/services/employees";
 type Ctx = { params: Promise<{ id: string }> };
 
 export const GET = handler<Ctx>(async (_req, ctx) => {
-  const user = await requireUser(["admin", "hr"]);
+  const user = await requireUser();
   const { id } = await ctx.params;
   if (user.role === "employee" && user.employeeId !== id)
     throw new ApiError(403, "You can only view your own profile");
-  return ok(await employee360(id));
+  const result = await employee360(id);
+  if (user.role === "employee") {
+    const { basic_salary: _salary, ...employee } = result.employee;
+    return ok({ ...result, employee });
+  }
+  return ok(result);
 });
 
 const schema = z.object({

@@ -1,34 +1,105 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 import { api, post } from "@/lib/client";
 import { Kpi, PageHeader, Spinner, Empty, StatusBadge, ErrorNote } from "@/components/ui";
-import { fmtMoney, fmtDate } from "@/lib/dates";
+import { fmtMoney, fmtDate, monthStart, todayISO } from "@/lib/dates";
 
 interface Analytics { role: string; kpis: any }
 interface Announcement { id: string; title: string; body: string; created_at: string }
+interface DashboardFilters { from: string; to: string; departmentId: string }
 
 export default function DashboardPage() {
   const [data, setData] = useState<Analytics | null>(null);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+  const [filters, setFilters] = useState<DashboardFilters>(() => {
+    const today = todayISO();
+    return { from: monthStart(today), to: today, departmentId: "" };
+  });
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    Promise.all([api<Analytics>("/api/analytics"), api<{ announcements: Announcement[] }>("/api/announcements")])
-      .then(([a, an]) => { setData(a); setAnnouncements(an.announcements ?? []); })
+    api<{ announcements: Announcement[] }>("/api/announcements")
+      .then((an) => setAnnouncements(an.announcements ?? []))
+      .catch((e) => setError(e.message));
+    api<{ departments: { id: string; name: string }[] }>("/api/org/departments")
+      .then((d) => setDepartments(d.departments ?? []))
       .catch((e) => setError(e.message));
   }, []);
 
+  useEffect(() => {
+    const params = new URLSearchParams({ from: filters.from, to: filters.to });
+    if (filters.departmentId) params.set("department_id", filters.departmentId);
+    setLoading(true);
+    api<Analytics>(`/api/analytics?${params}`)
+      .then(setData)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [filters]);
+
+  function updateFilters(patch: Partial<DashboardFilters>) {
+    setFilters((current) => ({ ...current, ...patch }));
+    setError("");
+  }
+
   if (error) return <ErrorNote message={error} />;
-  if (!data) return <Spinner />;
-  if (data.role === "admin") return <AdminDashboard kpis={data.kpis} announcements={announcements} />;
-  if (data.role === "hr") return <HrDashboard kpis={data.kpis} announcements={announcements} />;
-  return <EmployeeDashboard kpis={data.kpis} announcements={announcements} />;
+  if (loading || !data) return <Spinner />;
+
+  const isManager = data.role === "admin" || data.role === "hr";
+  return (
+    <>
+      {isManager && <AnalyticsFilters filters={filters} departments={departments} onChange={updateFilters} />}
+      {data.role === "admin"
+        ? <AdminDashboard kpis={data.kpis} announcements={announcements} filters={filters} />
+        : data.role === "hr"
+          ? <HrDashboard kpis={data.kpis} announcements={announcements} filters={filters} />
+          : <EmployeeDashboard kpis={data.kpis} announcements={announcements} />}
+    </>
+  );
 }
 
-function Summarize({ deptParam = "" }: { deptParam?: string }) {
+function AnalyticsFilters({ filters, departments, onChange }: {
+  filters: DashboardFilters;
+  departments: { id: string; name: string }[];
+  onChange: (patch: Partial<DashboardFilters>) => void;
+}) {
+  return (
+    <section className="card p-4 mb-5 flex flex-wrap items-end gap-3">
+      <div>
+        <label className="label" htmlFor="analytics-from">From</label>
+        <input id="analytics-from" className="input" type="date" value={filters.from}
+          max={filters.to} onChange={(e) => onChange({ from: e.target.value })} />
+      </div>
+      <div>
+        <label className="label" htmlFor="analytics-to">To</label>
+        <input id="analytics-to" className="input" type="date" value={filters.to}
+          min={filters.from} max={todayISO()} onChange={(e) => onChange({ to: e.target.value })} />
+      </div>
+      <div>
+        <label className="label" htmlFor="analytics-department">Department</label>
+        <select id="analytics-department" className="input min-w-44" value={filters.departmentId}
+          onChange={(e) => onChange({ departmentId: e.target.value })}>
+          <option value="">All departments</option>
+          {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+      </div>
+      <p className="text-xs text-slate-500 pb-2">Dashboard metrics use the selected dates and department.</p>
+    </section>
+  );
+}
+
+function SummaryQuery(filters: DashboardFilters) {
+  const params = new URLSearchParams({ from: filters.from, to: filters.to });
+  if (filters.departmentId) params.set("department_id", filters.departmentId);
+  return `/api/ai/summarize?${params}`;
+}
+
+function Summarize({ filters }: { filters: DashboardFilters }) {
   const [bullets, setBullets] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -38,10 +109,10 @@ function Summarize({ deptParam = "" }: { deptParam?: string }) {
         onClick={async () => {
           setBusy(true); setError("");
           try {
-            const r = await post<{ bullets: string[] }>(`/api/ai/summarize?department_id=${deptParam}`);
+            const r = await post<{ bullets: string[] }>(SummaryQuery(filters));
             setBullets(r.bullets);
           } catch (e) { setError(e instanceof Error ? e.message : "Summary failed"); }
-          setBusy(false);
+          finally { setBusy(false); }
         }}>
         {busy ? "Summarizing…" : "✨ AI summary"}
       </button>
@@ -58,14 +129,56 @@ function Summarize({ deptParam = "" }: { deptParam?: string }) {
   );
 }
 
-function AdminDashboard({ kpis, announcements }: { kpis: any; announcements: Announcement[] }) {
+function WorkspaceWelcome({ role, description, actions }: {
+  role: "admin" | "hr" | "employee";
+  description: string;
+  actions: { href: string; label: string }[];
+}) {
+  const styles = {
+    admin: "border-indigo-200 bg-indigo-50/70 text-indigo-950",
+    hr: "border-emerald-200 bg-emerald-50/70 text-emerald-950",
+    employee: "border-sky-200 bg-sky-50/70 text-sky-950",
+  };
+  const titles = {
+    admin: "Company command center",
+    hr: "People operations workspace",
+    employee: "Your workday, in one place",
+  };
+  return (
+    <section className={`card mb-5 flex flex-col gap-4 border p-5 sm:flex-row sm:items-center sm:justify-between ${styles[role]}`}>
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide opacity-70">{role} workspace</p>
+        <h2 className="mt-1 text-lg font-bold">{titles[role]}</h2>
+        <p className="mt-1 max-w-xl text-sm opacity-80">{description}</p>
+      </div>
+      <nav aria-label={`${role} quick actions`} className="flex flex-wrap gap-2">
+        {actions.map((action) => (
+          <Link key={action.href} className="btn-ghost bg-white/80 text-sm" href={action.href}>
+            {action.label}
+          </Link>
+        ))}
+      </nav>
+    </section>
+  );
+}
+
+function AdminDashboard({ kpis, announcements, filters }: {
+  kpis: any; announcements: Announcement[]; filters: DashboardFilters;
+}) {
   return (
     <div>
-      <PageHeader title="Company dashboard" sub="Company-wide view across all departments" />
+      <PageHeader title="Company dashboard" sub={`${fmtDate(filters.from)} – ${fmtDate(filters.to)}`} />
+      <WorkspaceWelcome role="admin"
+        description="Review company-wide performance, manage access and keep organization settings under control."
+        actions={[
+          { href: "/org", label: "Organization settings" },
+          { href: "/users", label: "Manage users" },
+          { href: "/audit", label: "Review audit log" },
+        ]} />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Kpi label="Headcount" value={kpis.headcount} sub="active + probation" />
-        <Kpi label="Attrition YTD" value={`${kpis.attritionYtd}%`} sub={`${kpis.exitsYtd} exit(s)`} tone="amber" />
-        <Kpi label="Payroll cost (finalized)" value={fmtMoney(kpis.payrollCostMonth)} sub="this month, net" tone="emerald" />
+        <Kpi label="Headcount" value={kpis.headcount} sub="active + probation at period end" />
+        <Kpi label="Attrition (selected range)" value={`${kpis.attritionYtd}%`} sub={`${kpis.exitsYtd} exit(s)`} tone="amber" />
+        <Kpi label="Payroll cost (finalized)" value={fmtMoney(kpis.payrollCostMonth)} sub="net total for selected months" tone="emerald" />
         <Kpi label="Avg basic salary" value={fmtMoney(kpis.avgBasicSalary)} tone="slate" />
       </div>
       <div className="grid lg:grid-cols-2 gap-4 mt-5">
@@ -90,23 +203,33 @@ function AdminDashboard({ kpis, announcements }: { kpis: any; announcements: Ann
             <div><p className="text-2xl font-bold text-indigo-600">{kpis.gender.female}</p><p className="text-xs text-slate-500">Female</p></div>
             <div><p className="text-2xl font-bold text-indigo-600">{kpis.gender.other}</p><p className="text-xs text-slate-500">Other</p></div>
           </div>
-          <p className="text-xs text-slate-400">Exits year-to-date: {kpis.exitsYtd}</p>
+          <p className="text-xs text-slate-400">Exits in selected range: {kpis.exitsYtd}</p>
         </div>
       </div>
-      <div className="mt-5"><Summarize /></div>
+      <div className="mt-5"><Summarize filters={filters} /></div>
       <Announcements announcements={announcements} />
     </div>
   );
 }
 
-function HrDashboard({ kpis, announcements }: { kpis: any; announcements: Announcement[] }) {
+function HrDashboard({ kpis, announcements, filters }: {
+  kpis: any; announcements: Announcement[]; filters: DashboardFilters;
+}) {
   const t = kpis.today;
+  const period = `${fmtDate(kpis.month.from)} – ${fmtDate(kpis.month.to)}`;
   return (
     <div>
-      <PageHeader title="HR dashboard" sub={`Today · ${fmtDate(kpis.month.trend.at(-1)?.date || "")}`} />
+      <PageHeader title="HR dashboard" sub={`Attendance and leave · ${period}`} />
+      <WorkspaceWelcome role="hr"
+        description="Keep daily people operations moving: onboard employees, resolve approvals and prepare payroll."
+        actions={[
+          { href: "/employees/new", label: "Register employee" },
+          { href: "/leave", label: "Review approvals" },
+          { href: "/payroll", label: "Prepare payroll" },
+        ]} />
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-        <Kpi label="Present" value={t.present} tone="emerald" />
-        <Kpi label="Late today" value={t.late} tone="amber" />
+        <Kpi label={`Present · ${fmtDate(filters.to)}`} value={t.present} tone="emerald" />
+        <Kpi label="Late" value={t.late} tone="amber" />
         <Kpi label="On leave" value={t.on_leave} tone="slate" />
         <Kpi label="Half day" value={t.half_day} tone="amber" />
         <Kpi label="Absent" value={t.absent} tone="rose" />
@@ -115,7 +238,7 @@ function HrDashboard({ kpis, announcements }: { kpis: any; announcements: Announ
 
       <div className="grid lg:grid-cols-2 gap-4 mt-5">
         <div className="card p-4">
-          <p className="text-sm font-semibold text-slate-700 mb-3">Attendance trend (this month)</p>
+          <p className="text-sm font-semibold text-slate-700 mb-3">Attendance trend · selected range</p>
           {kpis.month.trend.length === 0 ? <Empty title="No attendance data yet" /> : (
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={kpis.month.trend}>
@@ -148,7 +271,7 @@ function HrDashboard({ kpis, announcements }: { kpis: any; announcements: Announ
 
       <div className="grid lg:grid-cols-2 gap-4 mt-4">
         <div className="card p-4">
-          <p className="text-sm font-semibold text-slate-700 mb-2">Top 5 late-comers this month</p>
+          <p className="text-sm font-semibold text-slate-700 mb-2">Top 5 late-comers · selected range</p>
           {kpis.month.topLate.length === 0 ? <p className="text-sm text-slate-400">No late arrivals recorded.</p> : (
             <ul className="divide-y divide-slate-100">
               {kpis.month.topLate.map((r: { name: string; lates: number }, i: number) => (
@@ -161,8 +284,8 @@ function HrDashboard({ kpis, announcements }: { kpis: any; announcements: Announ
           )}
         </div>
         <div className="card p-4">
-          <p className="text-sm font-semibold text-slate-700 mb-2">Leave days by type (this month)</p>
-          {kpis.month.leaveByType.length === 0 ? <p className="text-sm text-slate-400">No approved leave this month.</p> : (
+          <p className="text-sm font-semibold text-slate-700 mb-2">Leave days by type · selected range</p>
+          {kpis.month.leaveByType.length === 0 ? <p className="text-sm text-slate-400">No approved leave in this period.</p> : (
             <ul className="divide-y divide-slate-100">
               {kpis.month.leaveByType.map((r: { type: string; days: number }, i: number) => (
                 <li key={i} className="flex justify-between py-2 text-sm">
@@ -174,7 +297,7 @@ function HrDashboard({ kpis, announcements }: { kpis: any; announcements: Announ
           )}
         </div>
       </div>
-      <div className="mt-5"><Summarize /></div>
+      <div className="mt-5"><Summarize filters={filters} /></div>
       <Announcements announcements={announcements} />
     </div>
   );
@@ -198,6 +321,13 @@ function EmployeeDashboard({ kpis, announcements }: { kpis: any; announcements: 
   return (
     <div>
       <PageHeader title="My dashboard" />
+      <WorkspaceWelcome role="employee"
+        description="Check your attendance, request time off and find your personal pay information."
+        actions={[
+          { href: "/attendance", label: "My attendance" },
+          { href: "/leave", label: "Request leave" },
+          { href: "/payslips", label: "View payslips" },
+        ]} />
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="card p-5 lg:col-span-1">
           <p className="text-sm font-semibold text-slate-700 mb-3">Attendance today</p>

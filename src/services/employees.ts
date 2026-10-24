@@ -1,7 +1,9 @@
 import "server-only";
+import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { ApiError } from "@/lib/auth";
 import { writeAudit } from "@/lib/org";
+import { parseCsv } from "@/lib/csv";
 
 export interface RegisterEmployeeInput {
   full_name: string; email: string; phone?: string; address?: string;
@@ -53,6 +55,107 @@ export async function registerEmployee(actorProfileId: string, p: RegisterEmploy
   }
   await writeAudit({ actorId: actorProfileId, action: "employee.register", entityType: "employees", entityId: emp.id, after: { code, name: p.full_name } });
   return { employee: emp, temp_password: tmp };
+}
+
+const csvEmployeeSchema = z.object({
+  code: z.string().trim().min(1, "Employee code is required"),
+  name: z.string().trim().min(2, "Name must be at least 2 characters"),
+  email: z.string().trim().email("Enter a valid email"),
+  phone: z.string().trim().optional(),
+  department: z.string().trim().min(1, "Department is required"),
+  designation: z.string().trim().optional(),
+  join_date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD"),
+  basic_salary: z.coerce.number().finite().positive("Salary must be greater than 0"),
+});
+
+export async function importEmployeesCsv(actorProfileId: string, csv: string, dryRun: boolean) {
+  let rows: string[][];
+  try {
+    rows = parseCsv(csv);
+  } catch (error) {
+    throw new ApiError(422, error instanceof Error ? error.message : "Could not parse CSV");
+  }
+  if (rows.length < 2) throw new ApiError(422, "CSV must contain a header and at least one employee row");
+
+  const aliases: Record<string, string> = {
+    employee_code: "code",
+    full_name: "name",
+    department_name: "department",
+    designation_title: "designation",
+  };
+  const headers = rows[0].map((value) => {
+    const key = value.replace(/^\uFEFF/, "").trim().toLowerCase().replace(/\s+/g, "_");
+    return aliases[key] ?? key;
+  });
+  if (new Set(headers).size !== headers.length) throw new ApiError(422, "CSV contains duplicate column headers");
+  const missing = ["code", "name", "email", "department", "join_date", "basic_salary"].filter((h) => !headers.includes(h));
+  if (missing.length) throw new ApiError(422, `Missing required CSV column(s): ${missing.join(", ")}`);
+
+  const [{ data: departments, error: departmentsError }, { data: employees, error: employeesError },
+    { data: authUsers, error: authError }] = await Promise.all([
+    supabaseAdmin.from("departments").select("id,name").eq("active", true),
+    supabaseAdmin.from("employees").select("employee_code,email"),
+    supabaseAdmin.auth.admin.listUsers({ perPage: 1000 }),
+  ]);
+  if (departmentsError || employeesError || authError) throw new ApiError(500, "Could not validate CSV against existing company data");
+
+  const departmentByName = new Map((departments ?? []).map((d) => [d.name.trim().toLowerCase(), d]));
+  const codes = new Set((employees ?? []).map((e) => e.employee_code.toLowerCase()));
+  const emails = new Set([
+    ...(employees ?? []).map((e) => e.email.toLowerCase()),
+    ...(authUsers?.users ?? []).map((u) => u.email?.toLowerCase()).filter((email): email is string => Boolean(email)),
+  ]);
+  const seenCodes = new Set<string>();
+  const seenEmails = new Set<string>();
+  const parsed = rows.slice(1).map((cells, index) => {
+    const value = Object.fromEntries(headers.map((header, col) => [header, cells[col] ?? ""]));
+    const result = csvEmployeeSchema.safeParse(value);
+    const errors = result.success
+      ? []
+      : result.error.issues.map((issue) => ({ field: String(issue.path[0] ?? "row"), reason: issue.message }));
+    const employee = result.success ? result.data : null;
+    const department = employee ? departmentByName.get(employee.department.toLowerCase()) : null;
+    if (employee && !department) errors.push({ field: "department", reason: `Unknown department "${employee.department}"` });
+    if (employee && (codes.has(employee.code.toLowerCase()) || seenCodes.has(employee.code.toLowerCase())))
+      errors.push({ field: "code", reason: "Employee code already exists in the database or CSV" });
+    if (employee && (emails.has(employee.email.toLowerCase()) || seenEmails.has(employee.email.toLowerCase())))
+      errors.push({ field: "email", reason: "Email already exists in the database or CSV" });
+    if (employee && department && errors.length === 0) {
+      seenCodes.add(employee.code.toLowerCase());
+      seenEmails.add(employee.email.toLowerCase());
+    }
+    return { row: index + 2, employee, department, errors };
+  });
+
+  const validRows = parsed.filter((row) => row.employee && row.department && row.errors.length === 0);
+  if (dryRun) {
+    return {
+      dry_run: true, total: parsed.length, valid: validRows.length, invalid: parsed.length - validRows.length,
+      rows: parsed.map((row) => ({ row: row.row, valid: row.errors.length === 0, errors: row.errors, code: row.employee?.code })),
+    };
+  }
+
+  const results = await Promise.all(parsed.map(async (row) => {
+    if (!row.employee || !row.department || row.errors.length) {
+      return { row: row.row, valid: false, errors: row.errors };
+    }
+    try {
+      const created = await registerEmployee(actorProfileId, {
+        full_name: row.employee.name,
+        email: row.employee.email,
+        phone: row.employee.phone,
+        department_id: row.department.id,
+        join_date: row.employee.join_date,
+        basic_salary: row.employee.basic_salary,
+        employee_code: row.employee.code,
+      });
+      return { row: row.row, valid: true, errors: [], code: row.employee.code, temp_password: created.temp_password };
+    } catch (error) {
+      return { row: row.row, valid: false, errors: [{ field: "row", reason: error instanceof Error ? error.message : "Could not import employee" }] };
+    }
+  }));
+  const imported = results.filter((row) => row.valid).length;
+  return { dry_run: false, total: results.length, imported, failed: results.length - imported, rows: results };
 }
 
 export async function updateEmployee(

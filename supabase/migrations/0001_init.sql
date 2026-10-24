@@ -230,21 +230,3 @@ alter table public.ai_logs            enable row level security;
 -- audit log is append-only
 revoke update, delete on public.audit_logs from anon, authenticated;
 
--- ============================================================
--- Dev helper (guarded): lets the build tool apply later schema
--- migrations through the service-role key. Removed before submit.
--- ============================================================
-create or replace function public.exec_sql(sql text)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  if coalesce(auth.role(), '') <> 'service_role' then
-    raise exception 'forbidden';
-  end if;
-  execute sql;
-end;
-$$;
-revoke all on function public.exec_sql(text) from anon, authenticated;

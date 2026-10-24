@@ -3,19 +3,21 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { requireUser } from "@/lib/auth";
 import { writeAudit } from "@/lib/org";
 import { ok, fail, parseBody, handler } from "@/lib/api";
+import { randomBytes } from "node:crypto";
 
 function tempPassword() {
-  return `Hcm-${Math.random().toString(36).slice(2, 10)}`;
+  return `Hcm-${randomBytes(9).toString("base64url")}`;
 }
 
-/** Admin manages Admin/HR logins (list, create, deactivate, reset password). */
+/** Admin manages HR and employee logins (list, deactivate, reset password). */
 export const GET = async () => {
   try {
     await requireUser(["admin"]);
     const { data } = await supabaseAdmin
       .from("profiles").select("id, role, full_name, active, created_at, employees(full_name)")
-      .in("role", ["admin", "hr"]).order("created_at");
-    const { data: emails } = await supabaseAdmin.auth.admin.listUsers({ perPage: 200 });
+      .in("role", ["hr", "employee"]).order("created_at");
+    const { data: emails, error } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+    if (error) throw error;
     const emailById = new Map((emails?.users ?? []).map((u) => [u.id, u.email]));
     return ok({
       users: (data ?? []).map((p) => ({ ...p, email: emailById.get(p.id) ?? "—" })),
@@ -28,7 +30,7 @@ export const POST = handler(async (req) => {
   const { full_name, email, role } = await parseBody(req, z.object({
     full_name: z.string().min(2, "Name is too short"),
     email: z.string().email("Valid email required"),
-    role: z.enum(["hr", "admin"]).default("hr"),
+    role: z.literal("hr").default("hr"),
   }));
   const tmp = tempPassword();
   const { data: authUser, error } = await supabaseAdmin.auth.admin.createUser({
@@ -53,11 +55,16 @@ export const PUT = handler(async (req) => {
   }));
   if (id === user.id && action !== "reset_password")
     return ok({ error: "You cannot deactivate your own account" }, 422);
+  const { data: target } = await supabaseAdmin.from("profiles").select("role").eq("id", id).maybeSingle();
+  if (!target || target.role === "admin")
+    return ok({ error: "Only HR and employee accounts can be managed here" }, 404);
   if (action === "reset_password") {
     const tmp = tempPassword();
     const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password: tmp });
     if (error) return ok({ error: error.message }, 422);
-    await supabaseAdmin.from("profiles").update({ must_change_password: true }).eq("id", id);
+    const { error: profileError } = await supabaseAdmin.from("profiles")
+      .update({ must_change_password: true }).eq("id", id);
+    if (profileError) throw profileError;
     await writeAudit({ actorId: user.id, action: "user.reset_password", entityType: "profiles", entityId: id });
     return ok({ temp_password: tmp });
   }

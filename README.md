@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# HCM Lite
 
-## Getting Started
+HCM Lite is an AI-assisted Human Capital Management web application built for the Saylani Hackathon. It has separate Admin, HR, and Employee experiences and starts with no company or employee data.
 
-First, run the development server:
+## Stack
+
+- Next.js 16, TypeScript, Tailwind CSS
+- Supabase Auth and PostgreSQL
+- Server-side business rules and role/data-scope authorization
+- OpenAI-compatible tool-calling assistant
+- pdf-lib payslip generation
+
+## Core capabilities
+
+- First-run company and Admin setup
+- Role-based access for Admin, HR, and Employee
+- Separate workspaces: Admin manages company access and controls, HR handles people operations and approvals, and Employees use self-service for their own records
+- Organization setup, employee registration, directory, CSV dry-run/import, and CSV export
+- Web attendance, corrections, leave balances, approvals, and notifications
+- Monthly payroll drafts, deductions, progressive tax, Admin finalization, and PDF payslips
+- Role-scoped dashboards, announcements, audit log, and AI assistant
+
+## Run locally
+
+1. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+2. Copy `.env.example` to `.env.local` and set the values from Supabase and your AI provider. Do not commit `.env.local`.
+
+3. In the Supabase Dashboard, open **SQL Editor**, paste the complete contents of `supabase/migrations/0001_init.sql`, and run it once. This creates an empty database; it does not seed company or employee data.
+
+4. Start the app:
+
+   ```bash
+   npm run dev
+   ```
+
+5. Visit `http://localhost:3000/setup`, create the company and first Admin user, then sign in.
+
+## Quality checks
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm test
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The test suite covers CSV parsing, working-day calculations, progressive tax brackets, payroll proration, and attendance/leave deductions.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deploy to Vercel
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Import this repository into Vercel and add the same environment variables from `.env.local`. Do not expose `SUPABASE_SERVICE_ROLE_KEY` or `AI_API_KEY` to the browser; neither variable may use the `NEXT_PUBLIC_` prefix.
 
-## Learn More
+## Demo flow
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Complete first-run setup as Admin.
+2. Add a department and designation, then create an HR user.
+3. Sign in as HR and register an employee.
+4. Sign in as the employee to check in, request leave, and view their dashboard.
+5. Return as HR to approve the request and create a payroll draft.
+6. Return as Admin to finalize payroll and download a payslip.
+7. Use the AI assistant for a role-scoped dashboard question or smart leave request.
